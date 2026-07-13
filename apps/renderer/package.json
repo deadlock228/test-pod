@@ -1,0 +1,14 @@
+{
+  "name": "@email-notif/renderer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Render de plantillas de email con variables {{...}} a partir de atributos del contacto.",
+  "type": "module",
+  "main": "src/render.js",
+  "exports": {
+    ".": "./src/render.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}
