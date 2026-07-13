@@ -1,0 +1,18 @@
+{
+  "name": "email-notif-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Plataforma SaaS multi-tenant de notificaciones por email (transaccional + campañas).",
+  "workspaces": [
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "install:all": "npm install",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present"
+  }
+}
