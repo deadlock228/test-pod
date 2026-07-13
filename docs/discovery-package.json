@@ -1,0 +1,227 @@
+{
+  "schemaVersion": 1,
+  "alcance": "Plataforma SaaS multi-tenant para enviar notificaciones por email a clientes: emails transaccionales y campañas. Incluye gestión de contactos y listas, plantillas con variables, integración con proveedor de envío (SMTP/SES/SendGrid), envío inmediato y programado, tracking de eventos (entrega/apertura/clic/rebote), gestión de suscripciones/baja, API pública con API keys y dashboard de métricas. Fuera de alcance MVP: SMS/push, editor drag-and-drop, A/B testing, facturación y workflows.",
+  "arquitectura": "Monolito modular con API REST + worker asíncrono. La API (auth JWT + API keys, CRUD, orquestación) encola jobs de envío en Redis; un worker renderiza la plantilla, llama al proveedor de email vía adaptador (SMTP/SES/SendGrid), aplica rate limiting y reintentos, y persiste resultados. PostgreSQL es la fuente de verdad. Los eventos de tracking llegan por webhooks firmados. Frontend SPA. Multi-tenant por tenant_id, idempotencia en envío transaccional y links de baja firmados. Dev con Docker Compose y CI lint+test.",
+  "dataModel": "Entidades: tenant (organización), user (roles admin/operador/viewer), api_key (hash+scopes), contact (email, attributes jsonb, subscribed), list y list_contact (N:M), template (subject/body con variables), campaign (template+list, status, scheduled_at), message (cada email, status, provider_message_id, idempotency_key), email_event (delivered/opened/clicked/bounced/complained), provider_config (credenciales cifradas, from_email). Todo con tenant_id + timestamps.",
+  "backlog": [
+    { "id": "B01", "title": "Autenticación y multi-tenant", "detail": "Registro/login, JWT, aislamiento por tenant, roles.", "priority": "must" },
+    { "id": "B02", "title": "Gestión de API keys", "detail": "Crear/revocar API keys por tenant con scopes.", "priority": "must" },
+    { "id": "B03", "title": "CRUD de contactos", "detail": "Alta/edición/baja con atributos jsonb.", "priority": "must" },
+    { "id": "B04", "title": "Import de contactos CSV", "detail": "Carga masiva con validación de emails.", "priority": "should" },
+    { "id": "B05", "title": "Listas y segmentos", "detail": "Agrupar contactos en listas (N:M).", "priority": "must" },
+    { "id": "B06", "title": "CRUD de plantillas", "detail": "Plantillas con subject y body HTML/texto.", "priority": "must" },
+    { "id": "B07", "title": "Render de plantillas con variables", "detail": "Sustitución de {{variables}} con atributos del contacto.", "priority": "must" },
+    { "id": "B08", "title": "Configuración de proveedor de envío", "detail": "Adaptador SMTP/SES/SendGrid + verificación.", "priority": "must" },
+    { "id": "B09", "title": "Envío transaccional individual (API)", "detail": "Endpoint con idempotencia que encola envío.", "priority": "must" },
+    { "id": "B10", "title": "Cola + worker de envío", "detail": "Procesamiento asíncrono con reintentos y rate limiting.", "priority": "must" },
+    { "id": "B11", "title": "Campañas a listas", "detail": "Crear campaña y encolar envíos a los contactos de la lista.", "priority": "must" },
+    { "id": "B12", "title": "Programación de envíos", "detail": "Enviar campaña en fecha/hora futura.", "priority": "should" },
+    { "id": "B13", "title": "Recepción de webhooks de eventos", "detail": "Endpoint firmado que registra delivered/open/click/bounce.", "priority": "must" },
+    { "id": "B14", "title": "Gestión de suscripciones / unsubscribe", "detail": "Link firmado de baja y estado de suscripción.", "priority": "must" },
+    { "id": "B15", "title": "Dashboard de métricas", "detail": "Tasas de entrega/apertura/clic/rebote por campaña.", "priority": "should" },
+    { "id": "B16", "title": "Historial y detalle de mensajes", "detail": "Listado y estado de cada email enviado.", "priority": "should" },
+    { "id": "B17", "title": "Observabilidad y health checks", "detail": "Logs estructurados, métricas de cola, /health.", "priority": "could" }
+  ],
+  "roadmap": "Fase 0 Foundation: scaffolding. Fase 1 (identidad y datos): B01, B02, B03, B05, B06. Fase 2 (motor de envío): B08, B07, B10, B09, B13. Fase 3 (campañas y cumplimiento): B11, B14, B12. Fase 4 (visibilidad): B16, B15, B04, B17. Hitos: M1 usuario crea contactos y plantillas; M2 email transaccional entregado; M3 campaña con tracking y baja; M4 dashboard de métricas.",
+  "foundationPlan": "Scaffoldear monorepo con servicios api y worker + frontend SPA. Docker Compose con PostgreSQL y Redis. Configurar migraciones versionadas y esquema base (tabla tenant, user). CI con lint + tests. Variables de entorno: DATABASE_URL, REDIS_URL, JWT_SECRET, EMAIL_PROVIDER, provider credentials (SMTP/SES/SENDGRID), WEBHOOK_SIGNING_SECRET, APP_BASE_URL. Health check endpoint y logging estructurado.",
+  "buildPlan": {
+    "slices": [
+      {
+        "id": "auth-multitenant",
+        "title": "Autenticación y multi-tenant",
+        "objetivo": "Permitir registro/login de usuarios con aislamiento por tenant y roles.",
+        "criteriosAceptacion": [
+          "Un usuario puede registrar un tenant y su primer usuario admin.",
+          "Login devuelve JWT válido y refresh token.",
+          "Las consultas quedan aisladas por tenant_id.",
+          "Roles admin/operador/viewer controlan el acceso a endpoints."
+        ],
+        "dependsOn": []
+      },
+      {
+        "id": "api-keys",
+        "title": "Gestión de API keys",
+        "objetivo": "Emitir y revocar API keys por tenant para autenticar sistemas externos.",
+        "criteriosAceptacion": [
+          "Un admin puede crear una API key y ve el valor solo una vez.",
+          "La key se almacena hasheada con scopes.",
+          "Una request con API key válida se autentica en el tenant correcto.",
+          "Revocar una key invalida su uso posterior."
+        ],
+        "dependsOn": ["auth-multitenant"]
+      },
+      {
+        "id": "contactos",
+        "title": "CRUD de contactos",
+        "objetivo": "Gestionar contactos con email, nombre y atributos dinámicos.",
+        "criteriosAceptacion": [
+          "Se puede crear, listar, editar y eliminar contactos del tenant.",
+          "El email es único por tenant.",
+          "Los atributos se guardan como jsonb para usarse en plantillas.",
+          "Validación de formato de email."
+        ],
+        "dependsOn": ["auth-multitenant"]
+      },
+      {
+        "id": "listas",
+        "title": "Listas y segmentos",
+        "objetivo": "Agrupar contactos en listas para envíos de campañas.",
+        "criteriosAceptacion": [
+          "Se puede crear/editar/eliminar listas.",
+          "Se pueden agregar y quitar contactos de una lista.",
+          "Se listan los contactos de una lista con paginación."
+        ],
+        "dependsOn": ["contactos"]
+      },
+      {
+        "id": "import-csv",
+        "title": "Import de contactos CSV",
+        "objetivo": "Cargar contactos masivamente desde un archivo CSV.",
+        "criteriosAceptacion": [
+          "Se sube un CSV y se crean/actualizan contactos.",
+          "Las filas con email inválido se reportan sin abortar el proceso.",
+          "Se devuelve un resumen de creados/actualizados/errores."
+        ],
+        "dependsOn": ["contactos"]
+      },
+      {
+        "id": "plantillas",
+        "title": "CRUD de plantillas",
+        "objetivo": "Gestionar plantillas de email con subject y cuerpo HTML/texto.",
+        "criteriosAceptacion": [
+          "Se puede crear/editar/eliminar plantillas del tenant.",
+          "La plantilla guarda subject, body_html y body_text.",
+          "Se puede previsualizar la plantilla."
+        ],
+        "dependsOn": ["auth-multitenant"]
+      },
+      {
+        "id": "render-variables",
+        "title": "Render de plantillas con variables",
+        "objetivo": "Sustituir variables {{...}} con atributos del contacto al renderizar.",
+        "criteriosAceptacion": [
+          "Las variables presentes se reemplazan por los atributos del contacto.",
+          "Variables faltantes se resuelven con valor por defecto vacío o placeholder.",
+          "El render aplica tanto a subject como a body."
+        ],
+        "dependsOn": ["plantillas", "contactos"]
+      },
+      {
+        "id": "proveedor-envio",
+        "title": "Configuración de proveedor de envío",
+        "objetivo": "Configurar y verificar el proveedor de email vía adaptador común.",
+        "criteriosAceptacion": [
+          "Se pueden guardar credenciales de SMTP/SES/SendGrid cifradas.",
+          "Existe un adaptador con interfaz común de envío.",
+          "Se puede verificar la configuración con un email de prueba.",
+          "Se define el from_email del tenant."
+        ],
+        "dependsOn": ["auth-multitenant"]
+      },
+      {
+        "id": "cola-worker",
+        "title": "Cola y worker de envío",
+        "objetivo": "Procesar envíos de forma asíncrona con reintentos y rate limiting.",
+        "criteriosAceptacion": [
+          "Los envíos se encolan y procesa un worker.",
+          "Fallos transitorios se reintentan con backoff.",
+          "Se respeta un rate limit por tenant.",
+          "El estado del message se actualiza (queued/sent/failed)."
+        ],
+        "dependsOn": ["proveedor-envio", "render-variables"]
+      },
+      {
+        "id": "envio-transaccional",
+        "title": "Envío transaccional individual",
+        "objetivo": "Disparar un email individual vía API con idempotencia.",
+        "criteriosAceptacion": [
+          "Endpoint autenticado con API key encola un email a un destinatario.",
+          "La misma idempotency_key no genera envíos duplicados.",
+          "Se crea un registro message con su estado.",
+          "Se soporta usar una plantilla o contenido inline."
+        ],
+        "dependsOn": ["cola-worker", "api-keys"]
+      },
+      {
+        "id": "webhooks-eventos",
+        "title": "Recepción de webhooks de eventos",
+        "objetivo": "Registrar eventos de tracking enviados por el proveedor.",
+        "criteriosAceptacion": [
+          "Endpoint recibe webhooks y valida la firma.",
+          "Se registran eventos delivered/opened/clicked/bounced/complained.",
+          "El evento se asocia al message por provider_message_id.",
+          "El estado del message se actualiza según el evento."
+        ],
+        "dependsOn": ["cola-worker"]
+      },
+      {
+        "id": "campanas",
+        "title": "Campañas a listas",
+        "objetivo": "Crear una campaña y enviar a todos los contactos de una lista.",
+        "criteriosAceptacion": [
+          "Se crea una campaña asociando plantilla y lista.",
+          "Al enviar, se encola un message por cada contacto suscripto de la lista.",
+          "El estado de la campaña refleja draft/sending/sent.",
+          "Los contactos dados de baja se excluyen del envío."
+        ],
+        "dependsOn": ["cola-worker", "listas"]
+      },
+      {
+        "id": "programacion-envios",
+        "title": "Programación de envíos",
+        "objetivo": "Programar el envío de una campaña en una fecha/hora futura.",
+        "criteriosAceptacion": [
+          "Se puede fijar scheduled_at en una campaña.",
+          "La campaña se envía automáticamente al llegar la hora.",
+          "Se puede cancelar una campaña programada antes del envío."
+        ],
+        "dependsOn": ["campanas"]
+      },
+      {
+        "id": "unsubscribe",
+        "title": "Gestión de suscripciones y unsubscribe",
+        "objetivo": "Permitir la baja de contactos mediante link firmado en cada email.",
+        "criteriosAceptacion": [
+          "Cada email de campaña incluye un link de baja firmado.",
+          "Al usar el link, el contacto queda marcado como no suscripto.",
+          "Contactos no suscriptos no reciben campañas.",
+          "El token de baja no puede falsificarse."
+        ],
+        "dependsOn": ["campanas"]
+      },
+      {
+        "id": "historial-mensajes",
+        "title": "Historial y detalle de mensajes",
+        "objetivo": "Consultar el listado y estado de los emails enviados.",
+        "criteriosAceptacion": [
+          "Se listan los mensajes del tenant con filtros por estado y campaña.",
+          "Se ve el detalle de un mensaje con sus eventos.",
+          "Listado paginado."
+        ],
+        "dependsOn": ["webhooks-eventos", "envio-transaccional"]
+      },
+      {
+        "id": "dashboard-metricas",
+        "title": "Dashboard de métricas",
+        "objetivo": "Mostrar tasas de entrega, apertura, clic y rebote por campaña.",
+        "criteriosAceptacion": [
+          "Se muestran métricas agregadas por campaña.",
+          "Las tasas se calculan a partir de email_event.",
+          "Se puede filtrar por rango de fechas."
+        ],
+        "dependsOn": ["webhooks-eventos", "campanas"]
+      },
+      {
+        "id": "observabilidad",
+        "title": "Observabilidad y health checks",
+        "objetivo": "Exponer health checks y logs/métricas para operar el sistema.",
+        "criteriosAceptacion": [
+          "Endpoint /health reporta estado de API, DB y cola.",
+          "Los logs son estructurados con tenant y request id.",
+          "Se exponen métricas básicas de la cola de envío."
+        ],
+        "dependsOn": ["cola-worker"]
+      }
+    ]
+  }
+}
