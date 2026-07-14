@@ -2,13 +2,14 @@
   "name": "@email-notif/api",
   "version": "0.1.0",
   "private": true,
-  "description": "API backend de la plataforma de notificaciones por email.",
   "type": "module",
-  "main": "src/index.js",
+  "description": "API backend: autenticación JWT y multi-tenant (slice auth-multitenant).",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test"
+    "start": "node src/server.js",
+    "test": "node --test",
+    "lint": "node --check src/server.js"
   }
 }
