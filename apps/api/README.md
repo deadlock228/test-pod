@@ -1,38 +1,48 @@
-# @email-notif/api
 
-API Backend de la Plataforma de Notificaciones por Email.
+# @email-notif/api — Observabilidad y health checks (B17)
 
-## Envío transaccional individual (B09)
+Módulo mínimo, sin dependencias externas (usa `node:http` y `node --test`),
+que aporta la capa de observabilidad de la plataforma.
 
-`POST /v1/messages` — autenticado por **API key** (`X-API-Key: <key>` o
-`Authorization: Bearer <key>`).
+## Endpoints
 
-Body:
+- `GET /health` — reporta el estado de **API**, **DB** y **cola** de envío.
+  Responde `200` con `{ status: "ok" }` si todo está `up`, o `503` con
+  `{ status: "degraded" }` si algún componente está `down`. Cada check incluye
+  `latencyMs` y, ante fallo, `error`.
+- `GET /metrics` (`/metrics/queue`) — métricas de la cola de envío en formato
+  texto Prometheus (`send_queue_*`).
+- `GET /metrics.json` — snapshot JSON de las métricas de la cola.
 
-```jsonc
-{
-  "to": "cliente@example.com",          // requerido, email válido
-  "idempotency_key": "order-123",       // opcional, único por tenant
-  // --- opción A: plantilla ---
-  "template_id": "tpl-welcome",
-  "variables": { "nombre": "Ana" },
-  // --- opción B: contenido inline (excluyente con template_id) ---
-  "subject": "Asunto",
-  "html": "<p>...</p>",
-  "text": "..."
-}
+## Logs estructurados
+
+Todos los logs son JSON por línea e incluyen **siempre** `tenantId` y
+`requestId` (tomados de `x-tenant-id` y `x-request-id`, o generados). El
+`x-request-id` se devuelve en la respuesta para correlación.
+
+## Métricas de cola disponibles
+
+`enqueued`, `active`, `waiting`, `sent`, `failed`, `retried`, `delayed`.
+
+## Uso
+
+```js
+const { createServer } = require('./src/server');
+const { createDbCheck, createQueueCheck } = require('./src/checks');
+
+const { server } = createServer({
+  checkDb: createDbCheck(process.env.DATABASE_URL),
+  checkQueue: createQueueCheck(process.env.REDIS_URL),
+});
+server.listen(3000);
 ```
 
-Respuestas:
-
-- `202 Accepted` — se creó el `message` (estado `queued`) y se encoló el envío.
-- `200 OK` — reintento idempotente: devuelve el `message` existente
-  (`"deduplicated": true`), sin encolar de nuevo.
-- `400` payload inválido, `401` API key ausente/inválida/revocada,
-  `404` plantilla inexistente.
-
-`GET /v1/messages/:id` — devuelve el estado del `message` (aislado por tenant).
+Los checks de DB y cola se inyectan (liveness TCP por defecto), lo que permite
+sustituirlos por drivers reales (pg / BullMQ) sin tocar el servidor.
 
 ## Scripts
 
-- `npm test` — tests con el runner nativo (`node --test`), sin dependencias externas.
+- `npm test` → `node --test`
+- `npm run lint` → `node --check` de cada módulo
+- `npm start` → levanta el servidor
+

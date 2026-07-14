@@ -1,0 +1,19 @@
+{
+  "name": "@email-notif/analytics",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Dashboard de métricas: agregación de tasas por campaña a partir de email_event.",
+  "type": "module",
+  "main": "src/metrics.js",
+  "exports": {
+    ".": "./src/metrics.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "lint": "node --check src/metrics.js && node --check src/dashboard.js",
+    "build": "node --check src/metrics.js && node --check src/dashboard.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
