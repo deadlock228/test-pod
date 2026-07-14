@@ -1,48 +1,85 @@
-/**
- * Servidor HTTP mínimo (sin dependencias) que expone el historial de mensajes.
- *
- * Se usa el módulo `node:http` para no introducir dependencias mientras el
- * scaffolding del framework REST no esté disponible. Cuando exista, este
- * controlador puede montarse como router del framework elegido.
- */
 
-import http from 'node:http';
-import { createMessageService } from './messages/messageService.js';
-import { createMessageController } from './messages/messageController.js';
-import { InMemoryMessageRepository } from './messages/messageRepository.js';
+'use strict';
 
-/**
- * Crea el servidor HTTP con las rutas de mensajes montadas.
- * @param {{ repository?: InMemoryMessageRepository, resolveTenant?: (req:any)=>(string|null) }} [deps]
- */
-export function createServer(deps = {}) {
-  const repository = deps.repository ?? new InMemoryMessageRepository();
-  const messageService = createMessageService(repository);
-  const messageController = createMessageController({
-    messageService,
-    resolveTenant: deps.resolveTenant,
-  });
+const http = require('node:http');
+const { createLogger } = require('./logger');
+const { getRequestId, getTenantId } = require('./requestContext');
+const { checkHealth } = require('./health');
+const { createQueueMetrics } = require('./queueMetrics');
 
-  return http.createServer(async (req, res) => {
+function sendJson(res, statusCode, body) {
+  const payload = JSON.stringify(body);
+  res.statusCode = statusCode;
+  res.setHeader('content-type', 'application/json');
+  res.end(payload);
+}
+
+// Crea el servidor HTTP de observabilidad. Todo se inyecta para testear:
+// logger, métricas de cola y los checks de DB/cola.
+function createServer(options = {}) {
+  const {
+    logger = createLogger({ level: process.env.LOG_LEVEL || 'info' }),
+    metrics = createQueueMetrics(),
+    checkDb,
+    checkQueue,
+    healthTimeoutMs,
+  } = options;
+
+  const handler = async (req, res) => {
+    const requestId = getRequestId(req);
+    const tenantId = getTenantId(req);
+    // Cada log de la request lleva requestId + tenantId (trazabilidad).
+    const reqLog = logger.child({ requestId, tenantId });
+    const start = Date.now();
+    res.setHeader('x-request-id', requestId);
+
+    reqLog.info('request.received', { method: req.method, path: req.url });
+
     try {
-      const handled = await messageController(req, res);
-      if (!handled) {
-        res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ error: 'ruta no encontrada' }));
+      if (req.method === 'GET' && req.url === '/health') {
+        const report = await checkHealth({
+          checkDb,
+          checkQueue,
+          timeoutMs: healthTimeoutMs,
+        });
+        sendJson(res, report.status === 'ok' ? 200 : 503, report);
+      } else if (
+        req.method === 'GET' &&
+        (req.url === '/metrics' || req.url === '/metrics/queue')
+      ) {
+        res.statusCode = 200;
+        res.setHeader('content-type', 'text/plain; version=0.0.4');
+        res.end(metrics.toPrometheus());
+      } else if (req.method === 'GET' && req.url === '/metrics.json') {
+        sendJson(res, 200, metrics.snapshot());
+      } else {
+        sendJson(res, 404, { error: 'not_found' });
       }
     } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ error: 'error interno' }));
+      reqLog.error('request.error', {
+        error: err && err.message ? err.message : String(err),
+      });
+      sendJson(res, 500, { error: 'internal_error' });
+    } finally {
+      reqLog.info('request.completed', {
+        method: req.method,
+        path: req.url,
+        statusCode: res.statusCode,
+        durationMs: Date.now() - start,
+      });
     }
+  };
+
+  const server = http.createServer((req, res) => {
+    handler(req, res).catch((err) => {
+      logger.error('handler.unhandled', {
+        error: err && err.message ? err.message : String(err),
+      });
+      if (!res.headersSent) sendJson(res, 500, { error: 'internal_error' });
+    });
   });
+
+  return { server, handler, logger, metrics };
 }
 
-// Arranque directo: `node src/server.js`
-if (import.meta.url === `file://${process.argv[1]}`) {
-  const port = Number(process.env.PORT) || 3000;
-  const server = createServer();
-  server.listen(port, () => {
-    // eslint-disable-next-line no-console
-    console.log(`API escuchando en :${port}`);
-  });
-}
+module.exports = { createServer, sendJson };
