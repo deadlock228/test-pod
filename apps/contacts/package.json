@@ -1,0 +1,13 @@
+{
+  "name": "@email-notif/contacts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Gestión e import de contactos (B03/B04).",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node --test",
+    "lint": "node --check src/csv.js && node --check src/email.js && node --check src/repository.js && node --check src/importContacts.js && node --check src/index.js",
+    "build": "node --check src/index.js"
+  }
+}

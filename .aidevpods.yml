@@ -1,0 +1,29 @@
+version: 1
+
+# Comandos reales de validación para este repo (monorepo npm workspaces).
+# El runner del pod ejecuta estos comandos desde la raíz del repo.
+commands:
+  install: npm install
+  test: npm test --workspaces --if-present
+  lint: npm run lint --workspaces --if-present
+  build: npm run build --workspaces --if-present
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    env:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: email_notif
+    port: 5432
+  redis:
+    image: redis:7-alpine
+    port: 6379
+
+env:
+  DATABASE_URL: postgres://app:app@localhost:5432/email_notif
+  REDIS_URL: redis://localhost:6379
+  JWT_SECRET: dev-secret-change-me
+  APP_BASE_URL: http://localhost:3000
+  WEBHOOK_SIGNING_SECRET: dev-webhook-secret-change-me
+  EMAIL_PROVIDER: smtp
