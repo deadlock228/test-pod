@@ -1,19 +1,25 @@
 /**
- * Cola en memoria que emula el rol de Redis/BullMQ para desacoplar el encolado
- * del envío real. Un adaptador real implementaría la misma interfaz `enqueue`.
+ * Cola de trabajos en memoria (stand-in de Redis/BullMQ para este slice).
+ * El worker de envío (B10) consumirá estos jobs; aquí sólo encolamos.
  */
-export class InMemoryQueue {
-  constructor() {
-    this.jobs = [];
-  }
-
-  enqueue(name, payload) {
-    const job = { id: this.jobs.length + 1, name, payload };
-    this.jobs.push(job);
-    return job;
-  }
-
-  get size() {
-    return this.jobs.length;
-  }
+export function createQueue() {
+  const jobs = [];
+  return {
+    enqueue(name, payload) {
+      const job = {
+        id: jobs.length + 1,
+        name,
+        payload,
+        enqueued_at: new Date().toISOString(),
+      };
+      jobs.push(job);
+      return job;
+    },
+    get jobs() {
+      return jobs;
+    },
+    size() {
+      return jobs.length;
+    },
+  };
 }

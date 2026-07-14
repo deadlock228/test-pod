@@ -1,87 +1,102 @@
 import { randomUUID } from 'node:crypto';
+import { IdempotencyConflictError } from './errors.js';
 
 /**
- * Store en memoria, multi-tenant, que modela las entidades necesarias para
- * campañas (contact, list, list_contact, template, campaign, message).
+ * Store en memoria para el slice de envío transaccional.
+ * Modela las tablas relevantes del modelo de datos: api_key, template y message,
+ * conservando el aislamiento por `tenant_id`.
  *
- * No pretende reemplazar a PostgreSQL: aísla la lógica de dominio de la
- * persistencia real para poder testearla sin infraestructura. Un repositorio
- * sobre PG implementaría la misma interfaz.
+ * La unicidad de `idempotency_key` es por tenant (índice único), replicando la
+ * restricción declarada en el modelo de datos (`idempotency_key unique por tenant`).
  */
-export class InMemoryStore {
-  constructor() {
-    this.contacts = new Map();
-    this.lists = new Map();
-    this.listContacts = []; // { listId, contactId }
-    this.templates = new Map();
-    this.campaigns = new Map();
-    this.messages = new Map();
+export function createStore() {
+  const apiKeys = new Map(); // key_hash -> api_key
+  const templates = new Map(); // id -> template
+  const messages = new Map(); // id -> message
+  const idempotencyIndex = new Map(); // `${tenant_id}:${idempotency_key}` -> message.id
+
+  function idemKey(tenantId, key) {
+    return `${tenantId}:${key}`;
   }
 
-  createContact({ tenantId, email, name = '', attributes = {}, subscribed = true }) {
-    if (!tenantId) throw new Error('tenantId requerido');
-    if (!email) throw new Error('email requerido');
-    const id = randomUUID();
-    const contact = {
-      id,
-      tenantId,
-      email,
-      name,
-      attributes,
-      subscribed,
-      unsubscribedAt: subscribed ? null : new Date().toISOString(),
-    };
-    this.contacts.set(id, contact);
-    return contact;
-  }
+  return {
+    // ---- seeding / dependencias de otros slices (api-keys, plantillas) ----
+    addApiKey(data) {
+      const record = {
+        id: data.id || randomUUID(),
+        tenant_id: data.tenant_id,
+        name: data.name || '',
+        key_hash: data.key_hash,
+        scopes: data.scopes || [],
+        revoked_at: data.revoked_at ?? null,
+      };
+      apiKeys.set(record.key_hash, record);
+      return record;
+    },
+    findApiKeyByHash(hash) {
+      return apiKeys.get(hash) || null;
+    },
 
-  unsubscribeContact(contactId) {
-    const contact = this.contacts.get(contactId);
-    if (!contact) throw new Error('contacto inexistente');
-    contact.subscribed = false;
-    contact.unsubscribedAt = new Date().toISOString();
-    return contact;
-  }
+    addTemplate(data) {
+      const record = {
+        id: data.id || randomUUID(),
+        tenant_id: data.tenant_id,
+        name: data.name || '',
+        subject: data.subject || '',
+        body_html: data.body_html || '',
+        body_text: data.body_text || '',
+      };
+      templates.set(record.id, record);
+      return record;
+    },
+    findTemplate(tenantId, id) {
+      const tpl = templates.get(id);
+      return tpl && tpl.tenant_id === tenantId ? tpl : null;
+    },
 
-  createList({ tenantId, name }) {
-    if (!tenantId) throw new Error('tenantId requerido');
-    const id = randomUUID();
-    const list = { id, tenantId, name };
-    this.lists.set(id, list);
-    return list;
-  }
+    // ---- mensajes ----
+    findMessageByIdempotencyKey(tenantId, key) {
+      const id = idempotencyIndex.get(idemKey(tenantId, key));
+      return id ? messages.get(id) : null;
+    },
 
-  addContactToList(listId, contactId) {
-    const already = this.listContacts.some(
-      (lc) => lc.listId === listId && lc.contactId === contactId,
-    );
-    if (!already) this.listContacts.push({ listId, contactId });
-  }
+    createMessage(data) {
+      if (data.idempotency_key) {
+        const k = idemKey(data.tenant_id, data.idempotency_key);
+        if (idempotencyIndex.has(k)) {
+          throw new IdempotencyConflictError();
+        }
+      }
+      const now = new Date().toISOString();
+      const record = {
+        id: randomUUID(),
+        tenant_id: data.tenant_id,
+        campaign_id: null,
+        contact_id: data.contact_id ?? null,
+        to_email: data.to_email,
+        template_id: data.template_id ?? null,
+        subject: data.subject ?? '',
+        status: data.status || 'queued',
+        provider_message_id: null,
+        idempotency_key: data.idempotency_key ?? null,
+        error: null,
+        created_at: now,
+        updated_at: now,
+      };
+      messages.set(record.id, record);
+      if (record.idempotency_key) {
+        idempotencyIndex.set(idemKey(record.tenant_id, record.idempotency_key), record.id);
+      }
+      return record;
+    },
 
-  /** Contactos pertenecientes a una lista, respetando el tenant. */
-  contactsInList(listId, tenantId) {
-    return this.listContacts
-      .filter((lc) => lc.listId === listId)
-      .map((lc) => this.contacts.get(lc.contactId))
-      .filter((c) => c && c.tenantId === tenantId);
-  }
+    getMessage(tenantId, id) {
+      const msg = messages.get(id);
+      return msg && msg.tenant_id === tenantId ? msg : null;
+    },
 
-  createTemplate({ tenantId, name, subject = '', bodyHtml = '', bodyText = '' }) {
-    if (!tenantId) throw new Error('tenantId requerido');
-    const id = randomUUID();
-    const template = { id, tenantId, name, subject, bodyHtml, bodyText };
-    this.templates.set(id, template);
-    return template;
-  }
-
-  createMessage(message) {
-    const id = randomUUID();
-    const record = { id, status: 'queued', ...message };
-    this.messages.set(id, record);
-    return record;
-  }
-
-  messagesByCampaign(campaignId) {
-    return [...this.messages.values()].filter((m) => m.campaignId === campaignId);
-  }
+    listMessages(tenantId) {
+      return [...messages.values()].filter((m) => m.tenant_id === tenantId);
+    },
+  };
 }

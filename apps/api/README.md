@@ -1,3 +1,4 @@
+
 # @email-notif/api — Observabilidad y health checks (B17)
 
 Módulo mínimo, sin dependencias externas (usa `node:http` y `node --test`),
@@ -44,3 +45,4 @@ sustituirlos por drivers reales (pg / BullMQ) sin tocar el servidor.
 - `npm test` → `node --test`
 - `npm run lint` → `node --check` de cada módulo
 - `npm start` → levanta el servidor
+
