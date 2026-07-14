@@ -2,9 +2,17 @@
   "name": "@email-notif/api",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
-  "description": "API backend de la plataforma de notificaciones por email.",
+
+  "description": "API backend — observabilidad y health checks (B17).",
+  "main": "src/server.js",
   "scripts": {
-    "test": "node --test"
+    "start": "node src/index.js",
+    "test": "node --test",
+    "lint": "node --check src/logger.js && node --check src/requestContext.js && node --check src/health.js && node --check src/queueMetrics.js && node --check src/checks.js && node --check src/server.js && node --check src/index.js",
+    "build": "node --check src/server.js"
+  },
+  "engines": {
+    "node": ">=20"
+
   }
 }
