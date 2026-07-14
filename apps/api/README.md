@@ -1,48 +1,40 @@
+# API — Autenticación y multi-tenant (slice `auth-multitenant`)
 
-# @email-notif/api — Observabilidad y health checks (B17)
+Implementación del backlog **B01**: registro/login, JWT + refresh token,
+aislamiento por `tenant_id` y control de acceso por roles
+(`admin` / `operador` / `viewer`).
 
-Módulo mínimo, sin dependencias externas (usa `node:http` y `node --test`),
-que aporta la capa de observabilidad de la plataforma.
+Sin dependencias externas: usa solo módulos nativos de Node.js
+(`node:http`, `node:crypto`) y el test runner integrado (`node --test`),
+para poder validarse sin `npm install`.
+
+## Comandos
+
+```bash
+npm test        # node --test  (corre apps/api/test/*.test.js)
+npm start       # levanta la API (PORT, JWT_SECRET)
+```
 
 ## Endpoints
 
-- `GET /health` — reporta el estado de **API**, **DB** y **cola** de envío.
-  Responde `200` con `{ status: "ok" }` si todo está `up`, o `503` con
-  `{ status: "degraded" }` si algún componente está `down`. Cada check incluye
-  `latencyMs` y, ante fallo, `error`.
-- `GET /metrics` (`/metrics/queue`) — métricas de la cola de envío en formato
-  texto Prometheus (`send_queue_*`).
-- `GET /metrics.json` — snapshot JSON de las métricas de la cola.
+| Método | Ruta             | Auth        | Rol            | Descripción |
+|--------|------------------|-------------|----------------|-------------|
+| POST   | `/auth/register` | pública     | —              | Crea tenant + primer usuario **admin**; devuelve tokens |
+| POST   | `/auth/login`    | pública     | —              | Devuelve `accessToken` (JWT) + `refreshToken` |
+| POST   | `/auth/refresh`  | refresh tok | —              | Renueva el access token |
+| GET    | `/me`            | Bearer      | cualquiera     | Contexto autenticado |
+| POST   | `/users`         | Bearer      | admin          | Alta de usuario en el tenant |
+| POST   | `/contacts`      | Bearer      | admin/operador | Crea contacto del tenant |
+| GET    | `/contacts`      | Bearer      | admin/op/viewer| Lista contactos del **propio** tenant |
+| GET    | `/health`        | pública     | —              | Health check |
 
-## Logs estructurados
+## Diseño
 
-Todos los logs son JSON por línea e incluyen **siempre** `tenantId` y
-`requestId` (tomados de `x-tenant-id` y `x-request-id`, o generados). El
-`x-request-id` se devuelve en la respuesta para correlación.
-
-## Métricas de cola disponibles
-
-`enqueued`, `active`, `waiting`, `sent`, `failed`, `retried`, `delayed`.
-
-## Uso
-
-```js
-const { createServer } = require('./src/server');
-const { createDbCheck, createQueueCheck } = require('./src/checks');
-
-const { server } = createServer({
-  checkDb: createDbCheck(process.env.DATABASE_URL),
-  checkQueue: createQueueCheck(process.env.REDIS_URL),
-});
-server.listen(3000);
-```
-
-Los checks de DB y cola se inyectan (liveness TCP por defecto), lo que permite
-sustituirlos por drivers reales (pg / BullMQ) sin tocar el servidor.
-
-## Scripts
-
-- `npm test` → `node --test`
-- `npm run lint` → `node --check` de cada módulo
-- `npm start` → levanta el servidor
-
+- **JWT HS256** firmado con `crypto.createHmac` (`src/jwt.js`), access de 15 min
+  y refresh de 7 días; verificación con comparación en tiempo constante.
+- **Contraseñas** con `scrypt` + salt aleatorio (`src/password.js`); nunca se
+  devuelve el `password_hash`.
+- **Aislamiento multi-tenant** a nivel de aplicación (`src/store.js`): toda tabla
+  de negocio exige `tenant_id` y las lecturas/escrituras filtran SIEMPRE por él,
+  imposibilitando el acceso cruzado entre tenants.
+- **RBAC** (`src/rbac.js`): permisos por rol aplicados como middleware.

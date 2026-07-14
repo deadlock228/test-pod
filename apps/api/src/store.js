@@ -1,102 +1,111 @@
-import { randomUUID } from 'node:crypto';
-import { IdempotencyConflictError } from './errors.js';
+// Store en memoria con aislamiento multi-tenant a nivel de aplicación.
+//
+// Toda tabla de negocio (todas menos `tenant`) exige un `tenant_id` en las
+// consultas: los métodos scoped filtran SIEMPRE por tenant_id, de modo que es
+// imposible leer/escribir datos de otro tenant por accidente.
+//
+// La interfaz imita un repositorio para poder cambiar por PostgreSQL más
+// adelante sin tocar los servicios.
+import crypto from 'node:crypto';
 
-/**
- * Store en memoria para el slice de envío transaccional.
- * Modela las tablas relevantes del modelo de datos: api_key, template y message,
- * conservando el aislamiento por `tenant_id`.
- *
- * La unicidad de `idempotency_key` es por tenant (índice único), replicando la
- * restricción declarada en el modelo de datos (`idempotency_key unique por tenant`).
- */
-export function createStore() {
-  const apiKeys = new Map(); // key_hash -> api_key
-  const templates = new Map(); // id -> template
-  const messages = new Map(); // id -> message
-  const idempotencyIndex = new Map(); // `${tenant_id}:${idempotency_key}` -> message.id
+const TENANT_SCOPED = new Set([
+  'user',
+  'api_key',
+  'contact',
+  'list',
+  'template',
+  'campaign',
+  'message',
+  'email_event',
+  'provider_config',
+]);
 
-  function idemKey(tenantId, key) {
-    return `${tenantId}:${key}`;
+export class Store {
+  constructor() {
+    this.tables = new Map();
   }
 
-  return {
-    // ---- seeding / dependencias de otros slices (api-keys, plantillas) ----
-    addApiKey(data) {
-      const record = {
-        id: data.id || randomUUID(),
-        tenant_id: data.tenant_id,
-        name: data.name || '',
-        key_hash: data.key_hash,
-        scopes: data.scopes || [],
-        revoked_at: data.revoked_at ?? null,
-      };
-      apiKeys.set(record.key_hash, record);
-      return record;
-    },
-    findApiKeyByHash(hash) {
-      return apiKeys.get(hash) || null;
-    },
+  _table(name) {
+    if (!this.tables.has(name)) this.tables.set(name, []);
+    return this.tables.get(name);
+  }
 
-    addTemplate(data) {
-      const record = {
-        id: data.id || randomUUID(),
-        tenant_id: data.tenant_id,
-        name: data.name || '',
-        subject: data.subject || '',
-        body_html: data.body_html || '',
-        body_text: data.body_text || '',
-      };
-      templates.set(record.id, record);
-      return record;
-    },
-    findTemplate(tenantId, id) {
-      const tpl = templates.get(id);
-      return tpl && tpl.tenant_id === tenantId ? tpl : null;
-    },
+  // --- tenant (tabla raíz, no scoped) -------------------------------------
+  insertTenant(data) {
+    const row = {
+      id: crypto.randomUUID(),
+      status: 'active',
+      plan: 'free',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      ...data,
+    };
+    this._table('tenant').push(row);
+    return { ...row };
+  }
 
-    // ---- mensajes ----
-    findMessageByIdempotencyKey(tenantId, key) {
-      const id = idempotencyIndex.get(idemKey(tenantId, key));
-      return id ? messages.get(id) : null;
-    },
+  findTenantById(id) {
+    const row = this._table('tenant').find((r) => r.id === id);
+    return row ? { ...row } : null;
+  }
 
-    createMessage(data) {
-      if (data.idempotency_key) {
-        const k = idemKey(data.tenant_id, data.idempotency_key);
-        if (idempotencyIndex.has(k)) {
-          throw new IdempotencyConflictError();
-        }
-      }
-      const now = new Date().toISOString();
-      const record = {
-        id: randomUUID(),
-        tenant_id: data.tenant_id,
-        campaign_id: null,
-        contact_id: data.contact_id ?? null,
-        to_email: data.to_email,
-        template_id: data.template_id ?? null,
-        subject: data.subject ?? '',
-        status: data.status || 'queued',
-        provider_message_id: null,
-        idempotency_key: data.idempotency_key ?? null,
-        error: null,
-        created_at: now,
-        updated_at: now,
-      };
-      messages.set(record.id, record);
-      if (record.idempotency_key) {
-        idempotencyIndex.set(idemKey(record.tenant_id, record.idempotency_key), record.id);
-      }
-      return record;
-    },
+  // --- tablas scoped por tenant ------------------------------------------
+  _assertScoped(table) {
+    if (!TENANT_SCOPED.has(table)) {
+      throw new Error(`Tabla "${table}" no es tenant-scoped`);
+    }
+  }
 
-    getMessage(tenantId, id) {
-      const msg = messages.get(id);
-      return msg && msg.tenant_id === tenantId ? msg : null;
-    },
+  insert(table, tenantId, data) {
+    this._assertScoped(table);
+    if (!tenantId) throw new Error('tenant_id requerido');
+    const row = {
+      id: crypto.randomUUID(),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      ...data,
+      tenant_id: tenantId, // el tenant_id nunca puede ser sobreescrito por data
+    };
+    this._table(table).push(row);
+    return { ...row };
+  }
 
-    listMessages(tenantId) {
-      return [...messages.values()].filter((m) => m.tenant_id === tenantId);
-    },
-  };
+  // Devuelve SOLO filas del tenant indicado (aislamiento garantizado).
+  find(table, tenantId, predicate = () => true) {
+    this._assertScoped(table);
+    if (!tenantId) throw new Error('tenant_id requerido');
+    return this._table(table)
+      .filter((r) => r.tenant_id === tenantId && predicate(r))
+      .map((r) => ({ ...r }));
+  }
+
+  findOne(table, tenantId, predicate = () => true) {
+    const rows = this.find(table, tenantId, predicate);
+    return rows.length ? rows[0] : null;
+  }
+
+  update(table, tenantId, id, patch) {
+    this._assertScoped(table);
+    if (!tenantId) throw new Error('tenant_id requerido');
+    const row = this._table(table).find(
+      (r) => r.id === id && r.tenant_id === tenantId,
+    );
+    if (!row) return null;
+    Object.assign(row, patch, {
+      id: row.id,
+      tenant_id: row.tenant_id,
+      updated_at: new Date().toISOString(),
+    });
+    return { ...row };
+  }
+
+  remove(table, tenantId, id) {
+    this._assertScoped(table);
+    if (!tenantId) throw new Error('tenant_id requerido');
+    const arr = this._table(table);
+    const idx = arr.findIndex((r) => r.id === id && r.tenant_id === tenantId);
+    if (idx === -1) return false;
+    arr.splice(idx, 1);
+    return true;
+  }
 }
