@@ -1,0 +1,11 @@
+{
+  "name": "@email-notif/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cola y worker de envío de emails: procesamiento asíncrono con reintentos, backoff y rate limiting por tenant.",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node --test"
+  }
+}
